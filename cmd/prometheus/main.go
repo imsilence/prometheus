@@ -407,13 +407,13 @@ func main() {
 	level.Info(logger).Log("vm_limits", prom_runtime.VmLimits())
 
 	var (
-		// 定义本地存储实例
+		// 定义本地存储器
 		localStorage = &tsdb.ReadyStorage{}
 
-		// 定义远程存储实例
+		// 定义远程存储器
 		remoteStorage = remote.NewStorage(log.With(logger, "component", "remote"), prometheus.DefaultRegisterer, localStorage.StartTime, cfg.localStoragePath, time.Duration(cfg.RemoteFlushDeadline))
 
-		// 定义扇出存储实例, local为主, remote为从
+		// 定义扇出存储器, local为主, remote为从
 		fanoutStorage = storage.NewFanout(logger, localStorage, remoteStorage)
 	)
 
@@ -454,7 +454,7 @@ func main() {
 		// 查询引擎实例
 		queryEngine = promql.NewEngine(opts)
 
-		// 规则器实例, 用于产生告警
+		// 规则引擎实例, 用于产生告警
 		ruleManager = rules.NewManager(&rules.ManagerOptions{
 			Appendable:      fanoutStorage,
 			TSDB:            localStorage,
@@ -473,10 +473,10 @@ func main() {
 	// 设置web配置信息
 	cfg.web.Context = ctxWeb              // web上下文
 	cfg.web.TSDB = localStorage.Get       // 本地tsdb数据库连接
-	cfg.web.Storage = fanoutStorage       // 扇出存储实例
+	cfg.web.Storage = fanoutStorage       // 扇出存储器
 	cfg.web.QueryEngine = queryEngine     // 查询引擎
 	cfg.web.ScrapeManager = scrapeManager // 采集器实例
-	cfg.web.RuleManager = ruleManager     // 规则器实例
+	cfg.web.RuleManager = ruleManager     // 规则引擎实例
 	cfg.web.Notifier = notifierManager    // 通知器实例
 	cfg.web.TSDBCfg = cfg.tsdb            // tsdb配置信息
 
@@ -518,7 +518,7 @@ func main() {
 		conntrack.DialWithTracing(),
 	)
 
-	// 重新加载配置
+	// 对各组件重新加载配置
 	reloaders := []func(cfg *config.Config) error{
 		remoteStorage.ApplyConfig, // 远程存储应用配置
 		webHandler.ApplyConfig,    // web处理器应用配置
@@ -563,7 +563,7 @@ func main() {
 			// TODO ApplyConfig内部实现
 			return discoveryManagerNotify.ApplyConfig(c)
 		},
-		func(cfg *config.Config) error { // 规则器应用配置(规则文件)
+		func(cfg *config.Config) error { // 规则引擎应用配置(规则文件)
 			// Get all rule files matching the configuration paths.
 			var files []string
 			// 获取告警规则文件glob配置
@@ -605,7 +605,7 @@ func main() {
 		Close func()
 	}
 	// Wait until the server is ready to handle reloading.
-	// 定义管道, 用于控制配置初始化完成后启动采集器, reload, 规则器, 通知器
+	// 定义管道, 用于控制配置初始化完成后启动采集器, reload, 规则引擎, 通知器
 	reloadReady := &closeOnce{
 		C: make(chan struct{}),
 	}
@@ -640,7 +640,7 @@ func main() {
 				return nil
 			},
 			func(err error) {
-				close(cancel)
+				close(cancel) // 关闭管道, 停止例程
 			},
 		)
 	}
@@ -655,7 +655,7 @@ func main() {
 			},
 			func(err error) {
 				level.Info(logger).Log("msg", "Stopping scrape discovery manager...")
-				cancelScrape()
+				cancelScrape() // 停止采集器配置管道处理例程
 			},
 		)
 	}
@@ -670,19 +670,20 @@ func main() {
 			},
 			func(err error) {
 				level.Info(logger).Log("msg", "Stopping notify discovery manager...")
-				cancelNotify()
+				cancelNotify() // 停止告警通知规则配置管道处理例程
 			},
 		)
 	}
 	{
 		// Scrape manager.
+		// 启动采集器, 通过采集配置管理实例管道更新采集池
 		g.Add(
 			func() error {
 				// When the scrape manager receives a new targets list
 				// it needs to read a valid config for each job.
 				// It depends on the config being in sync with the discovery manager so
 				// we wait until the config is fully loaded.
-				<-reloadReady.C
+				<-reloadReady.C // 待配置初始化后执行
 
 				err := scrapeManager.Run(discoveryManagerScrape.SyncCh())
 				level.Info(logger).Log("msg", "Scrape manager stopped")
@@ -692,12 +693,13 @@ func main() {
 				// Scrape manager needs to be stopped before closing the local TSDB
 				// so that it doesn't try to write samples to a closed storage.
 				level.Info(logger).Log("msg", "Stopping scrape manager...")
-				scrapeManager.Stop()
+				scrapeManager.Stop() // 停止采集器
 			},
 		)
 	}
 	{
 		// Reload handler.
+		// reload处理器, 监听kill -1信号和web重载信号
 
 		// Make sure that sighup handler is registered with a redirect to the channel before the potentially
 		// long and synchronous tsdb init.
@@ -706,16 +708,16 @@ func main() {
 		cancel := make(chan struct{})
 		g.Add(
 			func() error {
-				<-reloadReady.C
+				<-reloadReady.C // 待配置初始化后执行
 
 				for {
 					select {
 					case <-hup:
-						if err := reloadConfig(cfg.configFile, logger, reloaders...); err != nil {
+						if err := reloadConfig(cfg.configFile, logger, reloaders...); err != nil { //kill -1触发加载配置并更新各组件配置
 							level.Error(logger).Log("msg", "Error reloading config", "err", err)
 						}
 					case rc := <-webHandler.Reload():
-						if err := reloadConfig(cfg.configFile, logger, reloaders...); err != nil {
+						if err := reloadConfig(cfg.configFile, logger, reloaders...); err != nil { //web reload api触发加载配置并更新各组件配置
 							level.Error(logger).Log("msg", "Error reloading config", "err", err)
 							rc <- err
 						} else {
@@ -730,12 +732,13 @@ func main() {
 			func(err error) {
 				// Wait for any in-progress reloads to complete to avoid
 				// reloading things after they have been shutdown.
-				cancel <- struct{}{}
+				cancel <- struct{}{} // 关闭管道, 停止例程
 			},
 		)
 	}
 	{
 		// Initial configuration loading.
+		// 在数据库链接完成后, 初始化配置
 		cancel := make(chan struct{})
 		g.Add(
 			func() error {
@@ -748,41 +751,46 @@ func main() {
 					return nil
 				}
 
+				// 加载配置, 并对各组件进行调用
 				if err := reloadConfig(cfg.configFile, logger, reloaders...); err != nil {
 					return errors.Wrapf(err, "error loading config from %q", cfg.configFile)
 				}
 
+				// 配置加载完成, 通知采集器, reload, 规则引擎, 通知器例程进行启动
 				reloadReady.Close()
 
+				// 设置web处理器ready状态
 				webHandler.Ready()
 				level.Info(logger).Log("msg", "Server is ready to receive web requests.")
 				<-cancel
 				return nil
 			},
 			func(err error) {
-				close(cancel)
+				close(cancel) // 关闭管道, 停止例程
 			},
 		)
 	}
 	{
 		// Rule manager.
+		// 启动规则引擎
 		// TODO(krasi) refactor ruleManager.Run() to be blocking to avoid using an extra blocking channel.
 		cancel := make(chan struct{})
 		g.Add(
 			func() error {
-				<-reloadReady.C
-				ruleManager.Run()
+				<-reloadReady.C   // 待配置初始化后执行
+				ruleManager.Run() // 启动规则引擎
 				<-cancel
 				return nil
 			},
 			func(err error) {
-				ruleManager.Stop()
-				close(cancel)
+				ruleManager.Stop() // 停止规则引擎
+				close(cancel)      // 关闭管道, 停止例程
 			},
 		)
 	}
 	{
 		// TSDB.
+		// 启动TSDB
 		cancel := make(chan struct{})
 		g.Add(
 			func() error {
@@ -792,6 +800,7 @@ func main() {
 						return errors.New("flag 'storage.tsdb.wal-segment-size' must be set between 10MB and 256MB")
 					}
 				}
+				// 打开TSDB连接接
 				db, err := tsdb.Open(
 					cfg.localStoragePath,
 					log.With(logger, "component", "tsdb"),
@@ -814,14 +823,19 @@ func main() {
 					"WALCompression", cfg.tsdb.WALCompression,
 				)
 
+				// TODO: prometheus source, 用途
 				startTimeMargin := int64(2 * time.Duration(cfg.tsdb.MinBlockDuration).Seconds() * 1000)
+
+				// 设置本地存储TSDB连接
 				localStorage.Set(db, startTimeMargin)
+
+				// 关闭管道, 通知初始化配置例程
 				close(dbOpen)
 				<-cancel
 				return nil
 			},
 			func(err error) {
-				if err := fanoutStorage.Close(); err != nil {
+				if err := fanoutStorage.Close(); err != nil { // 关闭扇出存储器
 					level.Error(logger).Log("msg", "Error stopping storage", "err", err)
 				}
 				close(cancel)
@@ -830,21 +844,22 @@ func main() {
 	}
 	{
 		// Web handler.
+		// 启动web处理器
 		g.Add(
 			func() error {
-				if err := webHandler.Run(ctxWeb); err != nil {
+				if err := webHandler.Run(ctxWeb); err != nil { // 启动web处理器
 					return errors.Wrapf(err, "error starting web server")
 				}
 				return nil
 			},
 			func(err error) {
-				cancelWeb()
+				cancelWeb() // 停止web处理器
 			},
 		)
 	}
 	{
 		// Notifier.
-
+		// 启动通知器, 通过告警通知规则配置管理实例管道更新alartmanager
 		// Calling notifier.Stop() before ruleManager.Stop() will cause a panic if the ruleManager isn't running,
 		// so keep this interrupt after the ruleManager.Stop().
 		g.Add(
@@ -853,17 +868,19 @@ func main() {
 				// it needs to read a valid config for each job.
 				// It depends on the config being in sync with the discovery manager
 				// so we wait until the config is fully loaded.
-				<-reloadReady.C
+				<-reloadReady.C // 待配置初始化后执行
 
-				notifierManager.Run(discoveryManagerNotify.SyncCh())
+				notifierManager.Run(discoveryManagerNotify.SyncCh()) // 启动通知器
 				level.Info(logger).Log("msg", "Notifier manager stopped")
 				return nil
 			},
 			func(err error) {
-				notifierManager.Stop()
+				notifierManager.Stop() // 停止通知器
 			},
 		)
 	}
+
+	// 启动例程组
 	if err := g.Run(); err != nil {
 		level.Error(logger).Log("err", err)
 		os.Exit(1)
@@ -872,8 +889,10 @@ func main() {
 }
 
 func reloadConfig(filename string, logger log.Logger, rls ...func(*config.Config) error) (err error) {
+	// 加载配置并调用各组件进行加载
 	level.Info(logger).Log("msg", "Loading configuration file", "filename", filename)
 
+	// 设置配置成功,时间指标信息
 	defer func() {
 		if err == nil {
 			configSuccess.Set(1)
@@ -883,12 +902,14 @@ func reloadConfig(filename string, logger log.Logger, rls ...func(*config.Config
 		}
 	}()
 
+	// 反序列化配置文件内容到结构体
 	conf, err := config.LoadFile(filename)
 	if err != nil {
 		return errors.Wrapf(err, "couldn't load configuration (--config.file=%q)", filename)
 	}
 
 	failed := false
+	// 调用各组件加载配置
 	for _, rl := range rls {
 		if err := rl(conf); err != nil {
 			level.Error(logger).Log("msg", "Failed to apply configuration", "err", err)
@@ -899,6 +920,7 @@ func reloadConfig(filename string, logger log.Logger, rls ...func(*config.Config
 		return errors.Errorf("one or more errors occurred while applying the new configuration (--config.file=%q)", filename)
 	}
 
+	// TODO: prometheus source, 用途和含义
 	promql.SetDefaultEvaluationInterval(time.Duration(conf.GlobalConfig.EvaluationInterval))
 	level.Info(logger).Log("msg", "Completed loading of configuration file", "filename", filename)
 	return nil
@@ -958,32 +980,35 @@ func computeExternalURL(u, listenAddr string) (*url.URL, error) {
 	return eu, nil
 }
 
+// 发送器接口
 type sender interface {
 	Send(alerts ...*notifier.Alert)
 }
 
 // sendAlerts implements the rules.NotifyFunc for a Notifier.
 func sendAlerts(s sender, externalURL string) rules.NotifyFunc {
+	// 获取告警发送器
 	return func(ctx context.Context, expr string, alerts ...*rules.Alert) {
 		var res []*notifier.Alert
 
 		for _, alert := range alerts {
+			// 定义告警通知信息
 			a := &notifier.Alert{
-				StartsAt:     alert.FiredAt,
+				StartsAt:     alert.FiredAt, // 发生时间
 				Labels:       alert.Labels,
 				Annotations:  alert.Annotations,
 				GeneratorURL: externalURL + strutil.TableLinkForExpression(expr),
 			}
 			if !alert.ResolvedAt.IsZero() {
-				a.EndsAt = alert.ResolvedAt
+				a.EndsAt = alert.ResolvedAt // 恢复
 			} else {
-				a.EndsAt = alert.ValidUntil
+				a.EndsAt = alert.ValidUntil // 故障
 			}
 			res = append(res, a)
 		}
 
 		if len(alerts) > 0 {
-			s.Send(res...)
+			s.Send(res...) // 发送告警
 		}
 	}
 }
