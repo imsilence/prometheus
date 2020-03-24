@@ -183,7 +183,7 @@ func main() {
 		"Prefix for the internal routes of web endpoints. Defaults to path of --web.external-url.").
 		PlaceHolder("<path>").StringVar(&cfg.web.RoutePrefix)
 
-	// 设置web静态文件未知, 解析命令行参数web.user-assets到cfg.web.UserAssetsPath
+	// 设置web静态文件目录, 解析命令行参数web.user-assets到cfg.web.UserAssetsPath
 	a.Flag("web.user-assets", "Path to static asset directory, available at /user.").
 		PlaceHolder("<path>").StringVar(&cfg.web.UserAssetsPath)
 
