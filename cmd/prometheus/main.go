@@ -547,6 +547,7 @@ func main() {
 			}
 
 			// 应用配置
+			// TODO ApplyConfig内部实现
 			return discoveryManagerScrape.ApplyConfig(c)
 		},
 		notifierManager.ApplyConfig, // 通知器应用配置
@@ -559,6 +560,7 @@ func main() {
 			}
 
 			// 应用配置
+			// TODO ApplyConfig内部实现
 			return discoveryManagerNotify.ApplyConfig(c)
 		},
 		func(cfg *config.Config) error { // 规则器应用配置(规则文件)
@@ -576,6 +578,7 @@ func main() {
 			}
 
 			// 更新配置
+			// TODO Update内部实现
 			return ruleManager.Update(
 				time.Duration(cfg.GlobalConfig.EvaluationInterval),
 				files,
@@ -618,6 +621,7 @@ func main() {
 	var g run.Group
 	{
 		// Termination handler.
+		// 监听终端ctrl+c和kill信号, 或web退出信号, 结束例程组
 		term := make(chan os.Signal, 1)
 		signal.Notify(term, os.Interrupt, syscall.SIGTERM)
 		cancel := make(chan struct{})
@@ -642,6 +646,7 @@ func main() {
 	}
 	{
 		// Scrape discovery manager.
+		// 启动采集配置管理实例, 用于格式化targetGroup, 并写入管道等待采集器更新
 		g.Add(
 			func() error {
 				err := discoveryManagerScrape.Run()
@@ -656,6 +661,7 @@ func main() {
 	}
 	{
 		// Notify discovery manager.
+		// 启动告警通知规则配置管理实例, 用于格式化targetGroup, 并写入管道等待通知器更新
 		g.Add(
 			func() error {
 				err := discoveryManagerNotify.Run()
