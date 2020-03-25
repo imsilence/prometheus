@@ -33,12 +33,14 @@ var ErrNotReady = errors.New("TSDB not ready")
 
 // ReadyStorage implements the Storage interface while allowing to set the actual
 // storage at a later point in time.
+// 本地存储器代理
 type ReadyStorage struct {
 	mtx sync.RWMutex
-	a   *adapter
+	a   *adapter // 数据库适配器()
 }
 
 // Set the storage.
+// 设置tsdb数据库
 func (s *ReadyStorage) Set(db *tsdb.DB, startTimeMargin int64) {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
@@ -47,6 +49,7 @@ func (s *ReadyStorage) Set(db *tsdb.DB, startTimeMargin int64) {
 }
 
 // Get the storage.
+// 获取tsdb数据库连接
 func (s *ReadyStorage) Get() *tsdb.DB {
 	if x := s.get(); x != nil {
 		return x.db
@@ -54,6 +57,7 @@ func (s *ReadyStorage) Get() *tsdb.DB {
 	return nil
 }
 
+// 获取数据库适配器
 func (s *ReadyStorage) get() *adapter {
 	s.mtx.RLock()
 	x := s.a
@@ -62,6 +66,7 @@ func (s *ReadyStorage) get() *adapter {
 }
 
 // StartTime implements the Storage interface.
+// 获取数据库记录开始时间
 func (s *ReadyStorage) StartTime() (int64, error) {
 	if x := s.get(); x != nil {
 		return x.StartTime()
@@ -70,6 +75,7 @@ func (s *ReadyStorage) StartTime() (int64, error) {
 }
 
 // Querier implements the Storage interface.
+// 获取查询器
 func (s *ReadyStorage) Querier(ctx context.Context, mint, maxt int64) (storage.Querier, error) {
 	if x := s.get(); x != nil {
 		return x.Querier(ctx, mint, maxt)
@@ -78,6 +84,7 @@ func (s *ReadyStorage) Querier(ctx context.Context, mint, maxt int64) (storage.Q
 }
 
 // Appender implements the Storage interface.
+// 获取追加器
 func (s *ReadyStorage) Appender() (storage.Appender, error) {
 	if x := s.get(); x != nil {
 		return x.Appender()
@@ -86,6 +93,7 @@ func (s *ReadyStorage) Appender() (storage.Appender, error) {
 }
 
 // Close implements the Storage interface.
+// 关闭连接
 func (s *ReadyStorage) Close() error {
 	if x := s.Get(); x != nil {
 		return x.Close()

@@ -59,6 +59,7 @@ const (
 var userAgent = fmt.Sprintf("Prometheus/%s", version.Version)
 
 // Alert is a generic representation of an alert in the Prometheus eco-system.
+// 告警信息
 type Alert struct {
 	// Label value pairs for purpose of aggregation, matching, and disposition
 	// dispatching. This must minimally include an "alertname" label.
@@ -107,6 +108,7 @@ func (a *Alert) ResolvedAt(ts time.Time) bool {
 
 // Manager is responsible for dispatching alert notifications to an
 // alert manager service.
+// 通知器
 type Manager struct {
 	queue []*Alert
 	opts  *Options
@@ -123,6 +125,7 @@ type Manager struct {
 }
 
 // Options are the configurable parameters of a Handler.
+// 通知器配置选项
 type Options struct {
 	QueueCapacity  int
 	ExternalLabels labels.Labels
@@ -133,6 +136,7 @@ type Options struct {
 	Registerer prometheus.Registerer
 }
 
+// 监控信息
 type alertMetrics struct {
 	latency                 *prometheus.SummaryVec
 	errors                  *prometheus.CounterVec
@@ -143,6 +147,7 @@ type alertMetrics struct {
 	alertmanagersDiscovered prometheus.GaugeFunc
 }
 
+// 创建监控信息, 定义监控指标并进行注册
 func newAlertMetrics(r prometheus.Registerer, queueCap int, queueLen, alertmanagersDiscovered func() float64) *alertMetrics {
 	m := &alertMetrics{
 		latency: prometheus.NewSummaryVec(prometheus.SummaryOpts{
@@ -219,6 +224,7 @@ func do(ctx context.Context, client *http.Client, req *http.Request) (*http.Resp
 }
 
 // NewManager is the manager constructor.
+// 创建通知器
 func NewManager(o *Options, logger log.Logger) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -241,6 +247,7 @@ func NewManager(o *Options, logger log.Logger) *Manager {
 	queueLenFunc := func() float64 { return float64(n.queueLen()) }
 	alertmanagersDiscoveredFunc := func() float64 { return float64(len(n.Alertmanagers())) }
 
+	// 通知器监控指标
 	n.metrics = newAlertMetrics(
 		o.Registerer,
 		o.QueueCapacity,
@@ -252,6 +259,7 @@ func NewManager(o *Options, logger log.Logger) *Manager {
 }
 
 // ApplyConfig updates the status state as the new config requires.
+// 应用配置
 func (n *Manager) ApplyConfig(conf *config.Config) error {
 	n.mtx.Lock()
 	defer n.mtx.Unlock()

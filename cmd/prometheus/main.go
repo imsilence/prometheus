@@ -430,13 +430,13 @@ func main() {
 		// 指标信息采集上下文
 		ctxScrape, cancelScrape = context.WithCancel(context.Background())
 
-		// 采集配置管理实例, 用于监控采集配置变更后通知采集器
+		// 采集管理器实例, 用于监控采集配置变更后通知采集器
 		discoveryManagerScrape = discovery.NewManager(ctxScrape, log.With(logger, "component", "discovery manager scrape"), discovery.Name("scrape"))
 
 		// 通知上下文
 		ctxNotify, cancelNotify = context.WithCancel(context.Background())
 
-		// 告警通知规则配置管理实例, 用于监控告警通知规则配置变更后通知器
+		// 告警通知管理器实例, 用于监控告警通知规则配置变更后通知器
 		discoveryManagerNotify = discovery.NewManager(ctxNotify, log.With(logger, "component", "discovery manager notify"), discovery.Name("notify"))
 
 		// 采集器实例
@@ -538,7 +538,7 @@ func main() {
 		// The Scrape and notifier managers need to reload before the Discovery manager as
 		// they need to read the most updated config when receiving the new targets list.
 		scrapeManager.ApplyConfig, // 采集器应用配置
-		func(cfg *config.Config) error { // 采集配置管理应用配置
+		func(cfg *config.Config) error { // 采集管理器应用配置
 			c := make(map[string]sd_config.ServiceDiscoveryConfig)
 
 			// 获取job的采集配置信息
@@ -551,7 +551,7 @@ func main() {
 			return discoveryManagerScrape.ApplyConfig(c)
 		},
 		notifierManager.ApplyConfig, // 通知器应用配置
-		func(cfg *config.Config) error { // 告警通知规则配置管理应用配置
+		func(cfg *config.Config) error { // 告警通知管理器应用配置
 			c := make(map[string]sd_config.ServiceDiscoveryConfig)
 
 			// 获取告警管理配置信息
@@ -646,7 +646,7 @@ func main() {
 	}
 	{
 		// Scrape discovery manager.
-		// 启动采集配置管理实例, 用于格式化targetGroup, 并写入管道等待采集器更新
+		// 启动采集管理器实例, 用于格式化targetGroup, 并写入管道等待采集器更新
 		g.Add(
 			func() error {
 				err := discoveryManagerScrape.Run()
@@ -661,7 +661,7 @@ func main() {
 	}
 	{
 		// Notify discovery manager.
-		// 启动告警通知规则配置管理实例, 用于格式化targetGroup, 并写入管道等待通知器更新
+		// 启动告警通知管理器实例, 用于格式化targetGroup, 并写入管道等待通知器更新
 		g.Add(
 			func() error {
 				err := discoveryManagerNotify.Run()
@@ -676,7 +676,7 @@ func main() {
 	}
 	{
 		// Scrape manager.
-		// 启动采集器, 通过采集配置管理实例管道更新采集池
+		// 启动采集器, 通过采集管理器实例管道更新采集池
 		g.Add(
 			func() error {
 				// When the scrape manager receives a new targets list
@@ -859,7 +859,7 @@ func main() {
 	}
 	{
 		// Notifier.
-		// 启动通知器, 通过告警通知规则配置管理实例管道更新alartmanager
+		// 启动通知器, 通过告警通知管理器实例管道更新alartmanager
 		// Calling notifier.Stop() before ruleManager.Stop() will cause a panic if the ruleManager isn't running,
 		// so keep this interrupt after the ruleManager.Stop().
 		g.Add(
