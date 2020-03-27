@@ -150,6 +150,7 @@ type alertMetrics struct {
 // 创建监控信息, 定义监控指标并进行注册
 func newAlertMetrics(r prometheus.Registerer, queueCap int, queueLen, alertmanagersDiscovered func() float64) *alertMetrics {
 	m := &alertMetrics{
+		// 告警发送延迟分位数
 		latency: prometheus.NewSummaryVec(prometheus.SummaryOpts{
 			Namespace:  namespace,
 			Subsystem:  subsystem,

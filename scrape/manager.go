@@ -106,6 +106,7 @@ type Appendable interface {
 }
 
 // NewManager is the Manager constructor
+// 创建采集器
 func NewManager(logger log.Logger, app Appendable) *Manager {
 	if logger == nil {
 		logger = log.NewNopLogger()
@@ -113,43 +114,45 @@ func NewManager(logger log.Logger, app Appendable) *Manager {
 	m := &Manager{
 		append:        app,
 		logger:        logger,
-		scrapeConfigs: make(map[string]*config.ScrapeConfig),
-		scrapePools:   make(map[string]*scrapePool),
+		scrapeConfigs: make(map[string]*config.ScrapeConfig), // 存储每个job对应的配置信息
+		scrapePools:   make(map[string]*scrapePool),          //存储每个job对应的采集池
 		graceShut:     make(chan struct{}),
 		triggerReload: make(chan struct{}, 1),
 	}
-	targetMetadataCache.registerManager(m)
+	targetMetadataCache.registerManager(m) // 注册指标信息
 
 	return m
 }
 
 // Manager maintains a set of scrape pools and manages start/stop cycles
 // when receiving new target groups form the discovery manager.
+// 采集器
 type Manager struct {
 	logger    log.Logger
-	append    Appendable
-	graceShut chan struct{}
+	append    Appendable    // 数据记录器
+	graceShut chan struct{} // 结束管道
 
-	jitterSeed    uint64     // Global jitterSeed seed is used to spread scrape workload across HA setup.
-	mtxScrape     sync.Mutex // Guards the fields below.
-	scrapeConfigs map[string]*config.ScrapeConfig
-	scrapePools   map[string]*scrapePool
-	targetSets    map[string][]*targetgroup.Group
+	jitterSeed    uint64                          // Global jitterSeed seed is used to spread scrape workload across HA setup.
+	mtxScrape     sync.Mutex                      // Guards the fields below.
+	scrapeConfigs map[string]*config.ScrapeConfig // job对应配置
+	scrapePools   map[string]*scrapePool          // job对应采集池
+	targetSets    map[string][]*targetgroup.Group //job对应采集目标
 
-	triggerReload chan struct{}
+	triggerReload chan struct{} // 重新加载管道
 }
 
 // Run receives and saves target set updates and triggers the scraping loops reloading.
 // Reloading happens in the background so that it doesn't block receiving targets updates.
+// 启动采集
 func (m *Manager) Run(tsets <-chan map[string][]*targetgroup.Group) error {
-	go m.reloader()
+	go m.reloader() // 采集池更新
 	for {
 		select {
 		case ts := <-tsets:
-			m.updateTsets(ts)
+			m.updateTsets(ts) // 采集目标更新
 
 			select {
-			case m.triggerReload <- struct{}{}:
+			case m.triggerReload <- struct{}{}: // 触发采集池更新
 			default:
 			}
 
@@ -160,6 +163,7 @@ func (m *Manager) Run(tsets <-chan map[string][]*targetgroup.Group) error {
 }
 
 func (m *Manager) reloader() {
+	// 更新并启动采集池
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -179,25 +183,28 @@ func (m *Manager) reloader() {
 }
 
 func (m *Manager) reload() {
+	// 更新并启动采集池
 	m.mtxScrape.Lock()
 	var wg sync.WaitGroup
 	for setName, groups := range m.targetSets {
-		if _, ok := m.scrapePools[setName]; !ok {
-			scrapeConfig, ok := m.scrapeConfigs[setName]
+		if _, ok := m.scrapePools[setName]; !ok { // 新增采集池
+			scrapeConfig, ok := m.scrapeConfigs[setName] // 获取job配置
 			if !ok {
 				level.Error(m.logger).Log("msg", "error reloading target set", "err", "invalid config id:"+setName)
 				continue
 			}
+			// 创建采集吃
 			sp, err := newScrapePool(scrapeConfig, m.append, m.jitterSeed, log.With(m.logger, "scrape_pool", setName))
 			if err != nil {
 				level.Error(m.logger).Log("msg", "error creating new scrape pool", "err", err, "scrape_pool", setName)
 				continue
 			}
-			m.scrapePools[setName] = sp
+			m.scrapePools[setName] = sp // 存放缓存池
 		}
 
 		wg.Add(1)
 		// Run the sync in parallel as these take a while and at high load can't catch up.
+		// 更新 采集池 采集目标
 		go func(sp *scrapePool, groups []*targetgroup.Group) {
 			sp.Sync(groups)
 			wg.Done()
@@ -209,6 +216,7 @@ func (m *Manager) reload() {
 }
 
 // setJitterSeed calculates a global jitterSeed per server relying on extra label set.
+// 生成采集器唯一标识
 func (m *Manager) setJitterSeed(labels labels.Labels) error {
 	h := fnv.New64a()
 	hostname, err := getFqdn()
@@ -233,6 +241,7 @@ func (m *Manager) Stop() {
 	close(m.graceShut)
 }
 
+// 更新采集配置
 func (m *Manager) updateTsets(tsets map[string][]*targetgroup.Group) {
 	m.mtxScrape.Lock()
 	m.targetSets = tsets
@@ -240,28 +249,32 @@ func (m *Manager) updateTsets(tsets map[string][]*targetgroup.Group) {
 }
 
 // ApplyConfig resets the manager's target providers and job configurations as defined by the new cfg.
+// 应用配置
 func (m *Manager) ApplyConfig(cfg *config.Config) error {
 	m.mtxScrape.Lock()
 	defer m.mtxScrape.Unlock()
 
+	// 更新采集配置
 	c := make(map[string]*config.ScrapeConfig)
 	for _, scfg := range cfg.ScrapeConfigs {
 		c[scfg.JobName] = scfg
 	}
 	m.scrapeConfigs = c
 
+	// 更新采集器唯一标识
 	if err := m.setJitterSeed(cfg.GlobalConfig.ExternalLabels); err != nil {
 		return err
 	}
 
 	// Cleanup and reload pool if the configuration has changed.
+	// 清理配置不存在的采集池或更新采集池配置
 	var failed bool
 	for name, sp := range m.scrapePools {
-		if cfg, ok := m.scrapeConfigs[name]; !ok {
-			sp.stop()
+		if cfg, ok := m.scrapeConfigs[name]; !ok { // 清理不存在的采集池
+			sp.stop() // 停止采集池
 			delete(m.scrapePools, name)
 		} else if !reflect.DeepEqual(sp.config, cfg) {
-			err := sp.reload(cfg)
+			err := sp.reload(cfg) // 更新采集池配置
 			if err != nil {
 				level.Error(m.logger).Log("msg", "error reloading scrape pool", "err", err, "scrape_pool", name)
 				failed = true

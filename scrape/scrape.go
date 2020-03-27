@@ -155,13 +155,14 @@ func init() {
 }
 
 // scrapePool manages scrapes for sets of targets.
+// 采集池
 type scrapePool struct {
-	appendable Appendable
+	appendable Appendable // 存储器
 	logger     log.Logger
 
 	mtx    sync.RWMutex
-	config *config.ScrapeConfig
-	client *http.Client
+	config *config.ScrapeConfig // 采集配置
+	client *http.Client         // 采集client
 	// Targets and loops must always be synchronized to have the same
 	// set of hashes.
 	activeTargets  map[uint64]*Target
@@ -173,8 +174,9 @@ type scrapePool struct {
 	newLoop func(scrapeLoopOptions) loop
 }
 
+// 采集池配置
 type scrapeLoopOptions struct {
-	target          *Target
+	target          *Target //
 	scraper         scraper
 	limit           int
 	honorLabels     bool
@@ -187,12 +189,14 @@ const maxAheadTime = 10 * time.Minute
 
 type labelsMutator func(labels.Labels) labels.Labels
 
+// 创建采集池
 func newScrapePool(cfg *config.ScrapeConfig, app Appendable, jitterSeed uint64, logger log.Logger) (*scrapePool, error) {
 	targetScrapePools.Inc()
 	if logger == nil {
 		logger = log.NewNopLogger()
 	}
 
+	// 创建client
 	client, err := config_util.NewClientFromConfig(cfg.HTTPClientConfig, cfg.JobName, false)
 	if err != nil {
 		targetScrapePoolsFailed.Inc()
@@ -211,6 +215,8 @@ func newScrapePool(cfg *config.ScrapeConfig, app Appendable, jitterSeed uint64, 
 		loops:         map[uint64]loop{},
 		logger:        logger,
 	}
+
+	// 创建循环器函数
 	sp.newLoop = func(opts scrapeLoopOptions) loop {
 		// Update the targets retrieval function for metadata to a new scrape cache.
 		cache := opts.cache
@@ -262,6 +268,7 @@ func (sp *scrapePool) DroppedTargets() []*Target {
 }
 
 // stop terminates all scrape loops and returns after they all terminated.
+// 停止采集池
 func (sp *scrapePool) stop() {
 	sp.cancel()
 	var wg sync.WaitGroup
@@ -273,7 +280,7 @@ func (sp *scrapePool) stop() {
 		wg.Add(1)
 
 		go func(l loop) {
-			l.stop()
+			l.stop() // 停止采集循环器
 			wg.Done()
 		}(l)
 
@@ -281,12 +288,13 @@ func (sp *scrapePool) stop() {
 		delete(sp.activeTargets, fp)
 	}
 	wg.Wait()
-	sp.client.CloseIdleConnections()
+	sp.client.CloseIdleConnections() // 关闭client连接
 }
 
 // reload the scrape pool with the given scrape configuration. The target state is preserved
 // but all scrape loops are restarted with the new scrape configuration.
 // This method returns after all scrape loops that were stopped have stopped scraping.
+// 重载采集池配置
 func (sp *scrapePool) reload(cfg *config.ScrapeConfig) error {
 	targetScrapePoolReloads.Inc()
 	start := time.Now()
@@ -294,15 +302,16 @@ func (sp *scrapePool) reload(cfg *config.ScrapeConfig) error {
 	sp.mtx.Lock()
 	defer sp.mtx.Unlock()
 
+	// 创建client
 	client, err := config_util.NewClientFromConfig(cfg.HTTPClientConfig, cfg.JobName, false)
 	if err != nil {
 		targetScrapePoolReloadsFailed.Inc()
 		return errors.Wrap(err, "error creating HTTP client")
 	}
 
-	reuseCache := reusableCache(sp.config, cfg)
+	reuseCache := reusableCache(sp.config, cfg) // 配置未变更，缓存可重用
 	sp.config = cfg
-	oldClient := sp.client
+	oldClient := sp.client // 关闭旧连接
 	sp.client = client
 
 	var (
@@ -323,8 +332,9 @@ func (sp *scrapePool) reload(cfg *config.ScrapeConfig) error {
 			cache = newScrapeCache()
 		}
 		var (
-			t       = sp.activeTargets[fp]
-			s       = &targetScraper{Target: t, client: sp.client, timeout: timeout}
+			t = sp.activeTargets[fp]
+			s = &targetScraper{Target: t, client: sp.client, timeout: timeout}
+			// 创建循环器
 			newLoop = sp.newLoop(scrapeLoopOptions{
 				target:          t,
 				scraper:         s,
@@ -337,18 +347,19 @@ func (sp *scrapePool) reload(cfg *config.ScrapeConfig) error {
 		)
 		wg.Add(1)
 
+		// 关闭旧的循环器，启动新的循环器
 		go func(oldLoop, newLoop loop) {
-			oldLoop.stop()
+			oldLoop.stop() // 停止旧的循环器
 			wg.Done()
 
-			go newLoop.run(interval, timeout, nil)
+			go newLoop.run(interval, timeout, nil) // 启动循环器
 		}(oldLoop, newLoop)
 
 		sp.loops[fp] = newLoop
 	}
 
 	wg.Wait()
-	oldClient.CloseIdleConnections()
+	oldClient.CloseIdleConnections() // 关闭旧的client连接
 	targetReloadIntervalLength.WithLabelValues(interval.String()).Observe(
 		time.Since(start).Seconds(),
 	)
@@ -869,6 +880,7 @@ func (c *scrapeCache) LengthMetadata() int {
 	return len(c.metadata)
 }
 
+// 创建循环器
 func newScrapeLoop(ctx context.Context,
 	sc scraper,
 	l log.Logger,
