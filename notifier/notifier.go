@@ -753,7 +753,7 @@ func alertmanagerFromGroup(tg *targetgroup.Group, cfg *config.AlertmanagerConfig
 	var droppedAlertManagers []alertmanager
 
 	for _, tlset := range tg.Targets {
-		// 获取所有label target中配置的label,group中配置的label, scheme, path，
+		// 获取所有label target中配置的label(地址),group中配置的label, scheme, path
 		lbls := make([]labels.Label, 0, len(tlset)+2+len(tg.Labels))
 
 		for ln, lv := range tlset {
@@ -773,7 +773,7 @@ func alertmanagerFromGroup(tg *targetgroup.Group, cfg *config.AlertmanagerConfig
 			}
 		}
 
-		// 根据relabel_configs配置处理label
+		// 根据alarting.alartmanager.relabel_configs配置处理label
 		lset := relabel.Process(labels.New(lbls...), cfg.RelabelConfigs...)
 		if lset == nil {
 			// 无label告警通知管理数量
