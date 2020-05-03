@@ -174,7 +174,7 @@ type scrapePool struct {
 	newLoop func(scrapeLoopOptions) loop
 }
 
-// 采集池配置
+// 采集循环器(针对每个采集目标)配置
 type scrapeLoopOptions struct {
 	target          *Target //
 	scraper         scraper
@@ -216,15 +216,16 @@ func newScrapePool(cfg *config.ScrapeConfig, app Appendable, jitterSeed uint64, 
 		logger:        logger,
 	}
 
-	// 创建循环器函数
+	// 创建循环器函数(针对每个采集目标)
 	sp.newLoop = func(opts scrapeLoopOptions) loop {
 		// Update the targets retrieval function for metadata to a new scrape cache.
 		cache := opts.cache
 		if cache == nil {
-			cache = newScrapeCache()
+			cache = newScrapeCache() // 创建采集结果缓存
 		}
 		opts.target.SetMetadataStore(cache)
 
+		// 创建循环器
 		return newScrapeLoop(
 			ctx,
 			opts.scraper,
@@ -368,6 +369,7 @@ func (sp *scrapePool) reload(cfg *config.ScrapeConfig) error {
 
 // Sync converts target groups into actual scrape targets and synchronizes
 // the currently running scraper with the resulting set and returns all scraped and dropped targets.
+// 更新采集目标
 func (sp *scrapePool) Sync(tgs []*targetgroup.Group) {
 	start := time.Now()
 
@@ -375,7 +377,7 @@ func (sp *scrapePool) Sync(tgs []*targetgroup.Group) {
 	sp.mtx.Lock()
 	sp.droppedTargets = []*Target{}
 	for _, tg := range tgs {
-		targets, err := targetsFromGroup(tg, sp.config)
+		targets, err := targetsFromGroup(tg, sp.config) // 获取目标组中所有采集目标
 		if err != nil {
 			level.Error(sp.logger).Log("msg", "creating targets failed", "err", err)
 			continue
@@ -389,7 +391,7 @@ func (sp *scrapePool) Sync(tgs []*targetgroup.Group) {
 		}
 	}
 	sp.mtx.Unlock()
-	sp.sync(all)
+	sp.sync(all) // 更新采集池采集目标
 
 	targetSyncIntervalLength.WithLabelValues(sp.config.JobName).Observe(
 		time.Since(start).Seconds(),
@@ -400,6 +402,7 @@ func (sp *scrapePool) Sync(tgs []*targetgroup.Group) {
 // sync takes a list of potentially duplicated targets, deduplicates them, starts
 // scrape loops for new targets, and stops scrape loops for disappeared targets.
 // It returns after all stopped scrape loops terminated.
+// 更新采集目标，并启动采集循环器进行数据获取
 func (sp *scrapePool) sync(targets []*Target) {
 	sp.mtx.Lock()
 	defer sp.mtx.Unlock()
@@ -420,7 +423,9 @@ func (sp *scrapePool) sync(targets []*Target) {
 		uniqueTargets[hash] = struct{}{}
 
 		if _, ok := sp.activeTargets[hash]; !ok {
-			s := &targetScraper{Target: t, client: sp.client, timeout: timeout}
+			s := &targetScraper{Target: t, client: sp.client, timeout: timeout} // 定义采集目标
+
+			// 定义采集循环器
 			l := sp.newLoop(scrapeLoopOptions{
 				target:          t,
 				scraper:         s,
@@ -433,7 +438,7 @@ func (sp *scrapePool) sync(targets []*Target) {
 			sp.activeTargets[hash] = t
 			sp.loops[hash] = l
 
-			go l.run(interval, timeout, nil)
+			go l.run(interval, timeout, nil) // 启动采集
 		} else {
 			// Need to keep the most updated labels information
 			// for displaying it in the Service Discovery web page.
@@ -444,6 +449,7 @@ func (sp *scrapePool) sync(targets []*Target) {
 	var wg sync.WaitGroup
 
 	// Stop and remove old targets and scraper loops.
+	// 停止并移除不存在的采集循环器
 	for hash := range sp.activeTargets {
 		if _, ok := uniqueTargets[hash]; !ok {
 			wg.Add(1)
@@ -532,6 +538,7 @@ type scraper interface {
 }
 
 // targetScraper implements the scraper interface for a target.
+// 目标采集器
 type targetScraper struct {
 	*Target
 
@@ -547,7 +554,9 @@ const acceptHeader = `application/openmetrics-text; version=0.0.1,text/plain;ver
 
 var userAgentHeader = fmt.Sprintf("Prometheus/%s", version.Version)
 
+// 发起请求
 func (s *targetScraper) scrape(ctx context.Context, w io.Writer) (string, error) {
+	// 初始化请求对象
 	if s.req == nil {
 		req, err := http.NewRequest("GET", s.URL().String(), nil)
 		if err != nil {
@@ -561,6 +570,7 @@ func (s *targetScraper) scrape(ctx context.Context, w io.Writer) (string, error)
 		s.req = req
 	}
 
+	// 发起请求
 	resp, err := s.client.Do(s.req.WithContext(ctx))
 	if err != nil {
 		return "", err
@@ -570,10 +580,12 @@ func (s *targetScraper) scrape(ctx context.Context, w io.Writer) (string, error)
 		resp.Body.Close()
 	}()
 
+	// 判断请求状态码
 	if resp.StatusCode != http.StatusOK {
 		return "", errors.Errorf("server returned HTTP status %s", resp.Status)
 	}
 
+	// 请求结果未使用gzip压缩, 直接拷贝结果
 	if resp.Header.Get("Content-Encoding") != "gzip" {
 		_, err = io.Copy(w, resp.Body)
 		if err != nil {
@@ -583,18 +595,21 @@ func (s *targetScraper) scrape(ctx context.Context, w io.Writer) (string, error)
 	}
 
 	if s.gzipr == nil {
+		// 创建gzip解压缩器，并进行解压
 		s.buf = bufio.NewReader(resp.Body)
 		s.gzipr, err = gzip.NewReader(s.buf)
 		if err != nil {
 			return "", err
 		}
 	} else {
+		// gzip解压缩器存在，重置缓存和解压缩内容
 		s.buf.Reset(resp.Body)
 		if err = s.gzipr.Reset(s.buf); err != nil {
 			return "", err
 		}
 	}
 
+	// 拷贝解压缩内容
 	_, err = io.Copy(w, s.gzipr)
 	s.gzipr.Close()
 	if err != nil {
@@ -604,6 +619,7 @@ func (s *targetScraper) scrape(ctx context.Context, w io.Writer) (string, error)
 }
 
 // A loop can run and be stopped again. It must not be reused after it was stopped.
+// 定义循环器接口
 type loop interface {
 	run(interval, timeout time.Duration, errc chan<- error)
 	stop()
@@ -617,6 +633,7 @@ type cacheEntry struct {
 	lset     labels.Labels
 }
 
+// 定义采集循环器对象
 type scrapeLoop struct {
 	scraper         scraper
 	l               log.Logger
@@ -880,7 +897,7 @@ func (c *scrapeCache) LengthMetadata() int {
 	return len(c.metadata)
 }
 
-// 创建循环器
+// 创建采集循环器
 func newScrapeLoop(ctx context.Context,
 	sc scraper,
 	l log.Logger,
@@ -919,6 +936,7 @@ func newScrapeLoop(ctx context.Context,
 	return sl
 }
 
+// 启动采集循环器
 func (sl *scrapeLoop) run(interval, timeout time.Duration, errc chan<- error) {
 	select {
 	case <-time.After(sl.scraper.offset(interval, sl.jitterSeed)):
@@ -957,13 +975,13 @@ mainLoop:
 		}
 
 		b := sl.buffers.Get(sl.lastScrapeSize).([]byte)
-		buf := bytes.NewBuffer(b)
+		buf := bytes.NewBuffer(b) // 定义采集结果存储缓存
 
-		contentType, scrapeErr := sl.scraper.scrape(scrapeCtx, buf)
+		contentType, scrapeErr := sl.scraper.scrape(scrapeCtx, buf) //获取采集结果
 		cancel()
 
 		if scrapeErr == nil {
-			b = buf.Bytes()
+			b = buf.Bytes() // 获取采集结果
 			// NOTE: There were issues with misbehaving clients in the past
 			// that occasionally returned empty results. We don't want those
 			// to falsely reset our buffer size.
@@ -979,6 +997,7 @@ mainLoop:
 
 		// A failed scrape is the same as an empty scrape,
 		// we still call sl.append to trigger stale markers.
+		// 存储采集结果
 		total, added, seriesAdded, appErr := sl.append(b, contentType, start)
 		if appErr != nil {
 			level.Warn(sl.l).Log("msg", "append failed", "err", appErr)
@@ -995,6 +1014,7 @@ mainLoop:
 			scrapeErr = appErr
 		}
 
+		// 记录采集报告
 		if err := sl.report(start, time.Since(start), total, added, seriesAdded, scrapeErr); err != nil {
 			level.Warn(sl.l).Log("msg", "appending scrape report failed", "err", err)
 		}
@@ -1076,8 +1096,8 @@ func (sl *scrapeLoop) getCache() *scrapeCache {
 
 func (sl *scrapeLoop) append(b []byte, contentType string, ts time.Time) (total, added, seriesAdded int, err error) {
 	var (
-		app            = sl.appender()
-		p              = textparse.New(b, contentType)
+		app            = sl.appender()                 // 获取存储器
+		p              = textparse.New(b, contentType) // 创建采集结果解析器
 		defTime        = timestamp.FromTime(ts)
 		numOutOfOrder  = 0
 		numDuplicates  = 0
@@ -1088,7 +1108,7 @@ func (sl *scrapeLoop) append(b []byte, contentType string, ts time.Time) (total,
 loop:
 	for {
 		var et textparse.Entry
-		if et, err = p.Next(); err != nil {
+		if et, err = p.Next(); err != nil { // 解析采集结果
 			if err == io.EOF {
 				err = nil
 			}
@@ -1108,10 +1128,10 @@ loop:
 			continue
 		default:
 		}
-		total++
+		total++ //采集信息计数器
 
 		t := defTime
-		met, tp, v := p.Series()
+		met, tp, v := p.Series() //采集信息
 		if !sl.honorTimestamps {
 			tp = nil
 		}
@@ -1119,11 +1139,14 @@ loop:
 			t = *tp
 		}
 
+		// 是否需要丢掉
 		if sl.cache.getDropped(yoloString(met)) {
 			continue
 		}
+		// 获取上次采集结果
 		ce, ok := sl.cache.get(yoloString(met))
 		if ok {
+			// 使用快速存储采集结果
 			switch err = app.AddFast(ce.lset, ce.ref, t, v); err {
 			case nil:
 				if tp == nil {
@@ -1156,6 +1179,7 @@ loop:
 				break loop
 			}
 		}
+		// 无缓存数据或快速存储失败
 		if !ok {
 			var lset labels.Labels
 
@@ -1173,6 +1197,8 @@ loop:
 			}
 
 			var ref uint64
+
+			// 存储采集结果
 			ref, err = app.Add(lset, t, v)
 			switch err {
 			case nil:
@@ -1206,10 +1232,11 @@ loop:
 				// Bypass staleness logic if there is an explicit timestamp.
 				sl.cache.trackStaleness(hash, lset)
 			}
+			// 缓存采集信息
 			sl.cache.addRef(mets, ref, lset, hash)
 			seriesAdded++
 		}
-		added++
+		added++ //存储计数器
 	}
 	if sampleLimitErr != nil {
 		if err == nil {
@@ -1241,9 +1268,11 @@ loop:
 		})
 	}
 	if err != nil {
+		// 回滚数据
 		app.Rollback()
 		return total, added, seriesAdded, err
 	}
+	// 提交数据
 	if err := app.Commit(); err != nil {
 		return total, added, seriesAdded, err
 	}
