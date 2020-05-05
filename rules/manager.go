@@ -217,6 +217,7 @@ type Rule interface {
 }
 
 // Group is a set of rules that have a logical relation.
+// 告警规则组
 type Group struct {
 	name                 string
 	file                 string
@@ -240,6 +241,7 @@ type Group struct {
 }
 
 // NewGroup makes a new Group with the given name, options, and rules.
+// 创建告警规则组
 func NewGroup(name, file string, interval time.Duration, rules []Rule, shouldRestore bool, opts *ManagerOptions) *Group {
 	metrics := opts.Metrics
 	if metrics == nil {
@@ -278,6 +280,7 @@ func (g *Group) Rules() []Rule { return g.rules }
 // Interval returns the group's interval.
 func (g *Group) Interval() time.Duration { return g.interval }
 
+// 启动告警规则组
 func (g *Group) run(ctx context.Context) {
 	defer close(g.terminated)
 
@@ -296,11 +299,12 @@ func (g *Group) run(ctx context.Context) {
 		},
 	})
 
+	// 定义匿名函数执行告警规则
 	iter := func() {
 		g.metrics.iterationsScheduled.Inc()
 
 		start := time.Now()
-		g.Eval(ctx, evalTimestamp)
+		g.Eval(ctx, evalTimestamp) // 执行告警规则
 		timeSinceStart := time.Since(start)
 
 		g.metrics.iterationDuration.Observe(timeSinceStart.Seconds())
@@ -337,6 +341,7 @@ func (g *Group) run(ctx context.Context) {
 		g.shouldRestore = false
 	}
 
+	// 定时执行告警规则
 	for {
 		select {
 		case <-g.done:
@@ -358,6 +363,7 @@ func (g *Group) run(ctx context.Context) {
 	}
 }
 
+// 停止告警规则组
 func (g *Group) stop() {
 	close(g.done)
 	<-g.terminated
@@ -455,6 +461,7 @@ func nameAndLabels(rule Rule) string {
 //
 // Rules are matched based on their name and labels. If there are duplicates, the
 // first is matched with the first, second with the second etc.
+// 在告警规则更新时复制告警组中状态信息
 func (g *Group) CopyState(from *Group) {
 	g.evaluationDuration = from.evaluationDuration
 
@@ -466,6 +473,7 @@ func (g *Group) CopyState(from *Group) {
 		ruleMap[nameAndLabels] = append(l, fi)
 	}
 
+	// 按照规则名称和labels进行标识告警规则唯一性(判断是否原有该规则)
 	for i, rule := range g.rules {
 		nameAndLabels := nameAndLabels(rule)
 		indexes := ruleMap[nameAndLabels]
@@ -491,6 +499,7 @@ func (g *Group) CopyState(from *Group) {
 	}
 
 	// Handle deleted and unmatched duplicate rules.
+	// 处理原有规则 已不存在及存在但重复的规则的矢量信息
 	g.staleSeries = from.staleSeries
 	for fi, fromRule := range from.rules {
 		nameAndLabels := nameAndLabels(fromRule)
@@ -504,6 +513,7 @@ func (g *Group) CopyState(from *Group) {
 }
 
 // Eval runs a single evaluation cycle in which all rules are evaluated sequentially.
+// 执行告警规则
 func (g *Group) Eval(ctx context.Context, ts time.Time) {
 	for i, rule := range g.rules {
 		select {
@@ -526,7 +536,7 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 
 			g.metrics.evalTotal.Inc()
 
-			vector, err := rule.Eval(ctx, ts, g.opts.QueryFunc, g.opts.ExternalURL)
+			vector, err := rule.Eval(ctx, ts, g.opts.QueryFunc, g.opts.ExternalURL) // 执行告警规则
 			if err != nil {
 				// Canceled queries are intentional termination of queries. This normally
 				// happens on shutdown and thus we skip logging of any errors here.
@@ -538,7 +548,7 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 			}
 
 			if ar, ok := rule.(*AlertingRule); ok {
-				ar.sendAlerts(ctx, ts, g.opts.ResendDelay, g.interval, g.opts.NotifyFunc)
+				ar.sendAlerts(ctx, ts, g.opts.ResendDelay, g.interval, g.opts.NotifyFunc) //发送告警通知
 			}
 			var (
 				numOutOfOrder = 0
@@ -552,8 +562,9 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 			}
 
 			seriesReturned := make(map[string]labels.Labels, len(g.seriesInPreviousEval[i]))
+			// 存储告警规则产生各告警信息矢量值到tsdb, 并且记录矢量到映射中
 			for _, s := range vector {
-				if _, err := app.Add(s.Metric, s.T, s.V); err != nil {
+				if _, err := app.Add(s.Metric, s.T, s.V); err != nil { // 存储矢量到tsdb
 					switch err {
 					case storage.ErrOutOfOrderSample:
 						numOutOfOrder++
@@ -565,7 +576,7 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 						level.Warn(g.logger).Log("msg", "Rule evaluation result discarded", "err", err, "sample", s)
 					}
 				} else {
-					seriesReturned[s.Metric.String()] = s.Metric
+					seriesReturned[s.Metric.String()] = s.Metric //记录矢量到映射中
 				}
 			}
 			if numOutOfOrder > 0 {
@@ -592,11 +603,12 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 			if err := app.Commit(); err != nil {
 				level.Warn(g.logger).Log("msg", "rule sample appending failed", "err", err)
 			} else {
-				g.seriesInPreviousEval[i] = seriesReturned
+				g.seriesInPreviousEval[i] = seriesReturned //更新规则对那个矢量信息
 			}
 		}(i, rule)
 	}
 
+	// 存储不在使用的规则对应的矢量信息
 	if len(g.staleSeries) != 0 {
 		app, err := g.opts.Appendable.Appender()
 		if err != nil {
@@ -779,9 +791,10 @@ func (g *Group) Equals(ng *Group) bool {
 }
 
 // The Manager manages recording and alerting rules.
+// 告警管理器
 type Manager struct {
-	opts     *ManagerOptions
-	groups   map[string]*Group
+	opts     *ManagerOptions   // 参数配置
+	groups   map[string]*Group // 告警规则组
 	mtx      sync.RWMutex
 	block    chan struct{}
 	restored bool
@@ -798,6 +811,7 @@ type Appendable interface {
 type NotifyFunc func(ctx context.Context, expr string, alerts ...*Alert)
 
 // ManagerOptions bundles options for the Manager.
+// 告警管理器参数
 type ManagerOptions struct {
 	ExternalURL     *url.URL
 	QueryFunc       QueryFunc
@@ -816,6 +830,7 @@ type ManagerOptions struct {
 
 // NewManager returns an implementation of Manager, ready to be started
 // by calling the Run method.
+// 创建告警管理器结构体指针对象
 func NewManager(o *ManagerOptions) *Manager {
 	if o.Metrics == nil {
 		o.Metrics = NewGroupMetrics(o.Registerer)
@@ -833,19 +848,20 @@ func NewManager(o *ManagerOptions) *Manager {
 }
 
 // Run starts processing of the rule manager.
+// 启动告警管理器
 func (m *Manager) Run() {
 	close(m.block)
 }
 
 // Stop the rule manager's rule evaluation cycles.
-func (m *Manager) Stop() {
+func (m *Manager) Stop() { // 停止告警管理器
 	m.mtx.Lock()
 	defer m.mtx.Unlock()
 
 	level.Info(m.logger).Log("msg", "Stopping rule manager...")
 
 	for _, eg := range m.groups {
-		eg.stop()
+		eg.stop() // 停止所有告警规则组
 	}
 
 	level.Info(m.logger).Log("msg", "Rule manager stopped")
@@ -853,10 +869,12 @@ func (m *Manager) Stop() {
 
 // Update the rule manager's state as the config requires. If
 // loading the new rules failed the old rule set is restored.
+// 更新告警管理器(告警规则文件)
 func (m *Manager) Update(interval time.Duration, files []string, externalLabels labels.Labels) error {
 	m.mtx.Lock()
 	defer m.mtx.Unlock()
 
+	// 构建告警规则组
 	groups, errs := m.LoadGroups(interval, externalLabels, files...)
 	if errs != nil {
 		for _, e := range errs {
@@ -867,6 +885,7 @@ func (m *Manager) Update(interval time.Duration, files []string, externalLabels 
 	m.restored = true
 
 	var wg sync.WaitGroup
+	// 启动告警规则组
 	for _, newg := range groups {
 		// If there is an old group with the same identifier,
 		// check if new group equals with the old group, if yes then skip it.
@@ -876,6 +895,7 @@ func (m *Manager) Update(interval time.Duration, files []string, externalLabels 
 		oldg, ok := m.groups[gn]
 		delete(m.groups, gn)
 
+		// 检查告警规则组(配置)是否发生变化，若未变化则不进行处理
 		if ok && oldg.Equals(newg) {
 			groups[gn] = oldg
 			continue
@@ -884,21 +904,22 @@ func (m *Manager) Update(interval time.Duration, files []string, externalLabels 
 		wg.Add(1)
 		go func(newg *Group) {
 			if ok {
-				oldg.stop()
-				newg.CopyState(oldg)
+				oldg.stop()          // 停止原有告警规则组
+				newg.CopyState(oldg) // 复制告警组中状态信息
 			}
 			go func() {
 				// Wait with starting evaluation until the rule manager
 				// is told to run. This is necessary to avoid running
 				// queries against a bootstrapping storage.
 				<-m.block
-				newg.run(m.opts.Context)
+				newg.run(m.opts.Context) // 启动告警规则组
 			}()
 			wg.Done()
 		}(newg)
 	}
 
 	// Stop remaining old groups.
+	// 停止原有告警规则组
 	for n, oldg := range m.groups {
 		oldg.stop()
 		if m := oldg.metrics; m != nil {
@@ -910,12 +931,13 @@ func (m *Manager) Update(interval time.Duration, files []string, externalLabels 
 	}
 
 	wg.Wait()
-	m.groups = groups
+	m.groups = groups // 更新告警规则组
 
 	return nil
 }
 
 // LoadGroups reads groups from a list of files.
+// 加载告警规则组
 func (m *Manager) LoadGroups(
 	interval time.Duration, externalLabels labels.Labels, filenames ...string,
 ) (map[string]*Group, []error) {
@@ -923,30 +945,32 @@ func (m *Manager) LoadGroups(
 
 	shouldRestore := !m.restored
 
+	// 遍历告警规则文件
 	for _, fn := range filenames {
-		rgs, errs := rulefmt.ParseFile(fn)
+		rgs, errs := rulefmt.ParseFile(fn) // 解析告警规则文件并验证
 		if errs != nil {
 			return nil, errs
 		}
 
+		// 初始化告警规则组
 		for _, rg := range rgs.Groups {
-			itv := interval
-			if rg.Interval != 0 {
+			itv := interval       //告警规则执行周期(global)
+			if rg.Interval != 0 { // 若规则组中配置执行周期，则使用规则组中配置的
 				itv = time.Duration(rg.Interval)
 			}
 
 			rules := make([]Rule, 0, len(rg.Rules))
-			for _, r := range rg.Rules {
-				expr, err := promql.ParseExpr(r.Expr.Value)
+			for _, r := range rg.Rules { // 处理告警规则
+				expr, err := promql.ParseExpr(r.Expr.Value) // 解析告警规则查询表达式
 				if err != nil {
 					return nil, []error{errors.Wrap(err, fn)}
 				}
 
-				if r.Alert.Value != "" {
+				if r.Alert.Value != "" { // 处理alert类规则
 					rules = append(rules, NewAlertingRule(
-						r.Alert.Value,
-						expr,
-						time.Duration(r.For),
+						r.Alert.Value,        // 告警名称
+						expr,                 // 查询表达式
+						time.Duration(r.For), // 查询时间窗口
 						labels.FromMap(r.Labels),
 						labels.FromMap(r.Annotations),
 						externalLabels,
@@ -955,13 +979,15 @@ func (m *Manager) LoadGroups(
 					))
 					continue
 				}
+				// 处理record类规则
 				rules = append(rules, NewRecordingRule(
-					r.Record.Value,
-					expr,
+					r.Record.Value, // record名称
+					expr,           // 查询表达式
 					labels.FromMap(r.Labels),
 				))
 			}
 
+			// 创建告警规则组
 			groups[groupKey(fn, rg.Name)] = NewGroup(rg.Name, fn, itv, rules, shouldRestore, m.opts)
 		}
 	}

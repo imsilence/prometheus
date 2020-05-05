@@ -94,28 +94,30 @@ type Alert struct {
 	ValidUntil time.Time
 }
 
+// 判断是否需要发送告警信息
 func (a *Alert) needsSending(ts time.Time, resendDelay time.Duration) bool {
 	if a.State == StatePending {
-		return false
+		return false // 状态为pending不发送
 	}
 
 	// if an alert has been resolved since the last send, resend it
 	if a.ResolvedAt.After(a.LastSentAt) {
-		return true
+		return true // 解决时间晚于最后一次发送时间(告警恢复)
 	}
 
-	return a.LastSentAt.Add(resendDelay).Before(ts)
+	return a.LastSentAt.Add(resendDelay).Before(ts) // 重新发送告警信息
 }
 
 // An AlertingRule generates alerts from its vector expression.
+// 告警规则
 type AlertingRule struct {
 	// The name of the alert.
-	name string
+	name string // 告警名称
 	// The vector expression from which to generate alerts.
-	vector promql.Expr
+	vector promql.Expr // 告警expr
 	// The duration for which a labelset needs to persist in the expression
 	// output vector before an alert transitions from Pending to Firing state.
-	holdDuration time.Duration
+	holdDuration time.Duration // 持续时间
 	// Extra labels to attach to the resulting alert sample vectors.
 	labels labels.Labels
 	// Non-identifying key/value pairs.
@@ -143,6 +145,7 @@ type AlertingRule struct {
 }
 
 // NewAlertingRule constructs a new AlertingRule.
+// 创建告警规则结构体指针
 func NewAlertingRule(
 	name string, vec promql.Expr, hold time.Duration,
 	labels, annotations, externalLabels labels.Labels,
@@ -295,8 +298,9 @@ const resolvedRetention = 15 * time.Minute
 
 // Eval evaluates the rule expression and then creates pending alerts and fires
 // or removes previously pending alerts accordingly.
+// 规则告警检查
 func (r *AlertingRule) Eval(ctx context.Context, ts time.Time, query QueryFunc, externalURL *url.URL) (promql.Vector, error) {
-	res, err := query(ctx, r.vector.String(), ts)
+	res, err := query(ctx, r.vector.String(), ts) // 根据expr配置查询tsdb
 	if err != nil {
 		r.SetHealth(HealthBad)
 		r.SetLastError(err)
@@ -371,6 +375,7 @@ func (r *AlertingRule) Eval(ctx context.Context, ts time.Time, query QueryFunc, 
 			return nil, err
 		}
 
+		// 告警产生
 		alerts[h] = &Alert{
 			Labels:      lbs,
 			Annotations: annotations,
@@ -380,6 +385,7 @@ func (r *AlertingRule) Eval(ctx context.Context, ts time.Time, query QueryFunc, 
 		}
 	}
 
+	// 记录告警
 	for h, a := range alerts {
 		// Check whether we already have alerting state for the identifying label set.
 		// Update the last value and annotations if so, create a new alert entry otherwise.
@@ -393,13 +399,16 @@ func (r *AlertingRule) Eval(ctx context.Context, ts time.Time, query QueryFunc, 
 	}
 
 	// Check if any pending alerts should be removed or fire now. Write out alert timeseries.
+	// 处理所有告警信息
 	for fp, a := range r.active {
-		if _, ok := resultFPs[fp]; !ok {
+		if _, ok := resultFPs[fp]; !ok { // 针对非本次产生告警进行处理
 			// If the alert was previously firing, keep it around for a given
 			// retention time so it is reported as resolved to the AlertManager.
+			// 针对pending状态或者已经恢复且恢复时间已超过15分钟的告警从告警记录中删除
 			if a.State == StatePending || (!a.ResolvedAt.IsZero() && ts.Sub(a.ResolvedAt) > resolvedRetention) {
 				delete(r.active, fp)
 			}
+			// 修改告警状态(已产生告警的)为未激活状态，并设置恢复时间
 			if a.State != StateInactive {
 				a.State = StateInactive
 				a.ResolvedAt = ts
@@ -407,12 +416,14 @@ func (r *AlertingRule) Eval(ctx context.Context, ts time.Time, query QueryFunc, 
 			continue
 		}
 
+		// 处理状态为pending且时间已经超过For配置的时间周期，则触发告警
 		if a.State == StatePending && ts.Sub(a.ActiveAt) >= r.holdDuration {
 			a.State = StateFiring
 			a.FiredAt = ts
 		}
 
 		if r.restored {
+			// 告警规则及告警规则触发时间矢量值初始化用于存储到tsdb
 			vec = append(vec, r.sample(a, ts))
 			vec = append(vec, r.forStateSample(a, ts, float64(a.ActiveAt.Unix())))
 		}
@@ -470,6 +481,7 @@ func (r *AlertingRule) currentAlerts() []*Alert {
 // This should be used when you want to use the actual alerts from the AlertingRule
 // and not on its copy.
 // If you want to run on a copy of alerts then don't use this, get the alerts from 'ActiveAlerts()'.
+// 遍历所有告警记录，处理告警
 func (r *AlertingRule) ForEachActiveAlert(f func(*Alert)) {
 	r.mtx.Lock()
 	defer r.mtx.Unlock()
@@ -479,11 +491,12 @@ func (r *AlertingRule) ForEachActiveAlert(f func(*Alert)) {
 	}
 }
 
+// 发送告警
 func (r *AlertingRule) sendAlerts(ctx context.Context, ts time.Time, resendDelay time.Duration, interval time.Duration, notifyFunc NotifyFunc) {
 	alerts := []*Alert{}
 	r.ForEachActiveAlert(func(alert *Alert) {
-		if alert.needsSending(ts, resendDelay) {
-			alert.LastSentAt = ts
+		if alert.needsSending(ts, resendDelay) { // 判断是否需要发送告警/恢复告警信息
+			alert.LastSentAt = ts //更新发送时间
 			// Allow for a couple Eval or Alertmanager send failures
 			delta := resendDelay
 			if interval > resendDelay {
@@ -494,6 +507,7 @@ func (r *AlertingRule) sendAlerts(ctx context.Context, ts time.Time, resendDelay
 			alerts = append(alerts, &anew)
 		}
 	})
+	// 发送告警
 	notifyFunc(ctx, r.vector.String(), alerts...)
 }
 
